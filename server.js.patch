@@ -1,0 +1,275 @@
+const http = require('http');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const { Server } = require('socket.io');
+const Quiz = require('./models/Quiz');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
+mongoose.connect('mongodb://localhost:27017/quiz', { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB error:', err));
+
+// REST API
+app.post('/api/quizzes', async (req, res) => {
+  try {
+    const quiz = new Quiz(req.body);
+    await quiz.save();
+    res.json(quiz);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/quizzes', async (req, res) => {
+  const quizzes = await Quiz.find();
+  res.json(quizzes);
+});
+
+app.get('/api/quizzes/:id', async (req, res) => {
+  const quiz = await Quiz.findById(req.params.id);
+  res.json(quiz);
+});
+
+app.get('/api/search-quizzes', async (req, res) => {
+  const { q } = req.query;
+  const quizzes = await Quiz.find({
+    $or: [
+      { title: { $regex: q, $options: 'i' } },
+      { category: { $regex: q, $options: 'i' } }
+    ]
+  });
+  res.json(quizzes);
+});
+
+// Real-time logic
+let rooms = {};
+
+io.on('connection', (socket) => {
+  socket.on('joinRoom', ({ roomId, username }) => {
+    socket.join(roomId);
+    if (!rooms[roomId]) rooms[roomId] = [];
+    rooms[roomId].push({ id: socket.id, username, score: 0 });
+    io.to(roomId).emit('userList', rooms[roomId]);
+  });
+
+  socket.on('startQuiz', ({ roomId, quiz }) => {
+    rooms[roomId].quiz = quiz;
+    io.to(roomId).emit('quizStarted', quiz);
+  });
+
+  socket.on('setQuiz', ({ roomId, quiz }) => {
+    rooms[roomId].quiz = quiz;
+  });
+
+  socket.on('submitAnswer', ({ roomId, username, questionIndex, answerIndex, timeLeft }) => {
+    const quiz = rooms[roomId].quiz;
+    let user = rooms[roomId].find(u => u.username === username);
+    let points = 0;
+    if (quiz && quiz.questions[questionIndex].answer.includes(answerIndex)) {
+      points = Math.max(0, timeLeft); // Award points equal to seconds left
+      user.score += points;
+    }
+    io.to(roomId).emit('answerSubmitted', { username, answerIndex, score: user.score, points, correct: quiz && quiz.questions[questionIndex].answer.includes(answerIndex) });
+  });
+
+  socket.on('chatMessage', ({ roomId, username, msg }) => {
+    io.to(roomId).emit('chatMessage', { username, msg });
+  });
+
+  socket.on('disconnect', () => {
+    for (const roomId in rooms) {
+      rooms[roomId] = rooms[roomId].filter(u => u.id !== socket.id);
+      io.to(roomId).emit('userList', rooms[roomId]);
+    }
+  });
+});
+
+server.listen(3000, () => console.log('Server running on http://localhost:3000'));
+=======
+const express = require('express');
+const http = require('http');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const { Server } = require('socket.io');
+const Quiz = require('./models/Quiz');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
+mongoose.connect('mongodb://localhost:27017/quiz', { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB error:', err));
+
+// Helper function to validate quiz data
+function validateQuiz(data) {
+  if (!data.title || typeof data.title !== 'string') return 'Invalid or missing title';
+  if (!data.category || typeof data.category !== 'string') return 'Invalid or missing category';
+  if (!Array.isArray(data.questions) || data.questions.length === 0) return 'Questions must be a non-empty array';
+  for (const q of data.questions) {
+    if (!q.question || typeof q.question !== 'string') return 'Each question must have a valid question string';
+    if (!Array.isArray(q.options) || q.options.length < 2) return 'Each question must have at least two options';
+    if (!Array.isArray(q.answer) || q.answer.length === 0) return 'Each question must have at least one correct answer';
+    if (typeof q.timeLimit !== 'undefined' && (typeof q.timeLimit !== 'number' || q.timeLimit <= 0)) return 'timeLimit must be a positive number if provided';
+  }
+  return null;
+}
+
+// REST API
+app.post('/api/quizzes', async (req, res) => {
+  try {
+    const validationError = validateQuiz(req.body);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+    const quiz = new Quiz(req.body);
+    await quiz.save();
+    res.json(quiz);
+  } catch (err) {
+    console.error('Error creating quiz:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/quizzes', async (req, res) => {
+  try {
+    const quizzes = await Quiz.find();
+    res.json(quizzes);
+  } catch (err) {
+    console.error('Error fetching quizzes:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/quizzes/:id', async (req, res) => {
+  try {
+    const quiz = await Quiz.findById(req.params.id);
+    if (!quiz) {
+      return res.status(404).json({ error: 'Quiz not found' });
+    }
+    res.json(quiz);
+  } catch (err) {
+    console.error('Error fetching quiz by id:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/search-quizzes', async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || typeof q !== 'string') {
+      return res.status(400).json({ error: 'Query parameter q is required and must be a string' });
+    }
+    const quizzes = await Quiz.find({
+      $or: [
+        { title: { $regex: q, $options: 'i' } },
+        { category: { $regex: q, $options: 'i' } }
+      ]
+    });
+    res.json(quizzes);
+  } catch (err) {
+    console.error('Error searching quizzes:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Real-time logic
+let rooms = {};
+
+io.on('connection', (socket) => {
+  console.log(`User connected: ${socket.id}`);
+
+  socket.on('joinRoom', ({ roomId, username }) => {
+    if (!roomId || !username) {
+      socket.emit('error', 'roomId and username are required to join a room');
+      return;
+    }
+    socket.join(roomId);
+    if (!rooms[roomId]) rooms[roomId] = [];
+    if (!rooms[roomId].some(u => u.id === socket.id)) {
+      rooms[roomId].push({ id: socket.id, username, score: 0 });
+    }
+    io.to(roomId).emit('userList', rooms[roomId]);
+    console.log(`User ${username} joined room ${roomId}`);
+  });
+
+  socket.on('startQuiz', ({ roomId, quiz }) => {
+    if (!rooms[roomId]) {
+      socket.emit('error', 'Room does not exist');
+      return;
+    }
+    rooms[roomId].quiz = quiz;
+    io.to(roomId).emit('quizStarted', quiz);
+    console.log(`Quiz started in room ${roomId}`);
+  });
+
+  socket.on('setQuiz', ({ roomId, quiz }) => {
+    if (!rooms[roomId]) {
+      socket.emit('error', 'Room does not exist');
+      return;
+    }
+    rooms[roomId].quiz = quiz;
+    console.log(`Quiz set in room ${roomId}`);
+  });
+
+  socket.on('submitAnswer', ({ roomId, username, questionIndex, answerIndex, timeLeft }) => {
+    if (!rooms[roomId]) {
+      socket.emit('error', 'Room does not exist');
+      return;
+    }
+    const quiz = rooms[roomId].quiz;
+    if (!quiz) {
+      socket.emit('error', 'Quiz not set for this room');
+      return;
+    }
+    let user = rooms[roomId].find(u => u.username === username);
+    if (!user) {
+      socket.emit('error', 'User not found in room');
+      return;
+    }
+    let points = 0;
+    const correctAnswers = quiz.questions[questionIndex]?.answer || [];
+    const isCorrect = correctAnswers.includes(answerIndex);
+    if (isCorrect) {
+      points = Math.max(0, timeLeft);
+      user.score += points;
+    }
+    io.to(roomId).emit('answerSubmitted', { username, answerIndex, score: user.score, points, correct: isCorrect });
+    console.log(`User ${username} submitted answer for question ${questionIndex} in room ${roomId}: ${isCorrect ? 'correct' : 'incorrect'}`);
+  });
+
+  socket.on('chatMessage', ({ roomId, username, msg }) => {
+    if (!rooms[roomId]) {
+      socket.emit('error', 'Room does not exist');
+      return;
+    }
+    io.to(roomId).emit('chatMessage', { username, msg });
+    console.log(`Chat message from ${username} in room ${roomId}: ${msg}`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`User disconnected: ${socket.id}`);
+    for (const roomId in rooms) {
+      rooms[roomId] = rooms[roomId].filter(u => u.id !== socket.id);
+      if (rooms[roomId].length === 0) {
+        delete rooms[roomId];
+        console.log(`Room ${roomId} deleted because it became empty`);
+      } else {
+        io.to(roomId).emit('userList', rooms[roomId]);
+      }
+    }
+  });
+});
+
+server.listen(3000, () => console.log('Server running on http://localhost:3000'));
